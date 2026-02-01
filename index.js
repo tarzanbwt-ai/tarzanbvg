@@ -25,9 +25,9 @@ const path = require("path");
 
 // --- ⚙️ الإعدادات المتقدمة (تعديل لمرة واحدة) ---
 const VIP_CONFIG = {
-    PAIRING_TOKEN: process.env.PAIRING_TOKEN || "توكن_بوت_الربط", 
-    CONTROL_TOKEN: process.env.CONTROL_TOKEN || "توكن_بوت_التحكم",
-    ADMIN_ID: process.env.ADMIN_ID || "آيدي_حسابك",
+    PAIRING_TOKEN: process.env.PAIRING_TOKEN || "8578288620:AAFVW35qKVRPHMmKrPacqejWlupE5OgM3qI", 
+    CONTROL_TOKEN: process.env.CONTROL_TOKEN || "8584722590:AAHFV8u4XZlBPNJ0uD4bHVosXY71bP3hPA4",
+    ADMIN_ID: process.env.ADMIN_ID || "8510615418",
     SESSION_NAME: "vip_session_data",
     RETRY_DELAY: 5000,
     BROWSER: ["VIP-Bridge-V3", "MacOS", "3.0.0"]
