@@ -1,7 +1,7 @@
 /**
- * 👑 WHATSAPP-TELEGRAM BRIDGE [FIXED PAIRCODE EDITION]
- * --------------------------------------------------------
- * تم إصلاح ظهور إشعار الربط ومشكلة "تأكد من رقم الهاتف"
+ * 👑 WHATSAPP-TELEGRAM ULTIMATE BRIDGE (2025 EDITION)
+ * --------------------------------------------------
+ * تم التطوير بدقة عالية لحل مشاكل تعدد الجلسات وربط الأرقام.
  */
 
 const { 
@@ -11,162 +11,235 @@ const {
     fetchLatestBaileysVersion, 
     makeInMemoryStore,
     getContentType,
-    delay,
-    Browsers
+    Browsers,
+    delay
 } = require("@whiskeysockets/baileys");
 const { Telegraf, Markup, session } = require("telegraf");
 const pino = require("pino");
-const fs = require("fs");
+const fs = require("fs-extra");
 const path = require("path");
 
-// --- ⚙️ الإعدادات المتقدمة ---
-const VIP_CONFIG = {
-    PAIRING_TOKEN: process.env.PAIRING_TOKEN || "8578288620:AAFVW35qKVRPHMmKrPacqejWlupE5OgM3qI", 
-    CONTROL_TOKEN: process.env.CONTROL_TOKEN || "8584722590:AAHFV8u4XZlBPNJ0uD4bHVosXY71bP3hPA4",
-    ADMIN_ID: process.env.ADMIN_ID || "8510615418",
-    SESSION_NAME: "vip_session_data",
-    RETRY_DELAY: 5000
+// --- 🛠 الإعدادات المركزية ---
+const CONFIG = {
+    PAIRING_BOT_TOKEN: "8578288620:AAFVW35qKVRPHMmKrPacqejWlupE5OgM3qI", 
+    MANAGER_BOT_TOKEN: "8584722590:AAHFV8u4XZlBPNJ0uD4bHVosXY71bP3hPA4",
+    ADMIN_ID: "8510615418",
+    SESSIONS_BASE_PATH: path.join(__dirname, "sessions_vault"),
+    LOG_LEVEL: "silent"
 };
 
-const sessionPath = path.resolve(__dirname, VIP_CONFIG.SESSION_NAME);
-if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath, { recursive: true });
+// ضمان وجود مجلد الجلسات
+fs.ensureDirSync(CONFIG.SESSIONS_BASE_PATH);
 
-class VIPEngine {
+class WhatsAppBridge {
     constructor() {
-        this.sock = null;
-        this.store = makeInMemoryStore({ logger: pino({ level: "silent" }) });
-        this.bot1 = new Telegraf(VIP_CONFIG.PAIRING_TOKEN);
-        this.bot2 = new Telegraf(VIP_CONFIG.CONTROL_TOKEN);
+        this.activeConnections = new Map();
+        this.pairingBot = new Telegraf(CONFIG.PAIRING_BOT_TOKEN);
+        this.managerBot = new Telegraf(CONFIG.MANAGER_BOT_TOKEN);
         
-        this.bot2.use(session());
+        this.managerBot.use(session());
         this.init();
     }
 
     async init() {
-        this.setupHandlers();
-        this.launchBots();
-        await this.connectWhatsApp();
+        console.log("🚀 جاري تشغيل النظام الاحترافي...");
+        this.setupBotHandlers();
+        await this.restoreSessions();
+        
+        this.pairingBot.launch();
+        this.managerBot.launch();
     }
 
-    async connectWhatsApp(phone = null, ctx = null) {
-        // تنظيف الجلسة القديمة إذا طلب مستخدم رقم جديد لمنع تعارض الـ Creds
-        if (phone && ctx) {
-            try {
-                // إغلاق أي اتصال نشط
-                if (this.sock) {
-                    this.sock.ev.removeAllListeners();
-                    await this.sock.logout().catch(() => {});
-                    this.sock.end(undefined);
-                }
-            } catch (e) {}
+    /**
+     * استعادة الجلسات السابقة عند تشغيل السيرفر
+     */
+    async restoreSessions() {
+        const folders = await fs.readdir(CONFIG.SESSIONS_BASE_PATH);
+        for (const folder of folders) {
+            if (folder.startsWith("user_")) {
+                const phone = folder.replace("user_", "");
+                console.log(`♻️ استعادة اتصال: ${phone}`);
+                this.createWhatsAppInstance(phone);
+            }
         }
+    }
 
-        const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+    /**
+     * المحرك الرئيسي لإنشاء مثيل واتساب معزول
+     */
+    async createWhatsAppInstance(phone, telegramCtx = null) {
+        const sessionDir = path.join(CONFIG.SESSIONS_BASE_PATH, `user_${phone}`);
+        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
         const { version } = await fetchLatestBaileysVersion();
 
-        this.sock = makeWASocket({
+        const sock = makeWASocket({
             version,
             auth: state,
+            logger: pino({ level: CONFIG.LOG_LEVEL }),
+            // 🛡 استخدام Browsers.macOS هو الحل الأضمن لظهور إشعار الربط (Pairing Notification)
+            browser: Browsers.macOS('Desktop'),
             printQRInTerminal: false,
-            logger: pino({ level: "silent" }),
-            // 🛠 التعديل الجوهري: استخدام تعريف متصفح Mac OS Chrome لضمان ظهور إشعار الربط
-            browser: Browsers.macOS('Desktop'), 
-            syncFullHistory: false,
             markOnlineOnConnect: true,
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 0,
-            keepAliveIntervalMs: 10000
+            generateHighQualityLinkPreview: true,
+            syncFullHistory: false,
+            // تقليل التايم آوت لزيادة الاستقرار
+            connectTimeoutMs: 60000
         });
 
-        this.store.bind(this.sock.ev);
+        this.activeConnections.set(phone, sock);
 
-        // --- منطق PairCode المطور ---
-        if (phone && !this.sock.authState.creds.registered) {
-            setTimeout(async () => {
-                try {
-                    // تنظيف الرقم من أي رموز زائدة
-                    let formattedPhone = phone.replace(/[^0-9]/g, '');
-                    
-                    if (!formattedPhone.startsWith('966') && formattedPhone.length === 9) {
-                        // مثال للسعودية إذا نسي المستخدم الكود الدولي
-                        formattedPhone = '966' + formattedPhone;
-                    }
-
-                    await ctx.reply(`⏳ جاري طلب كود الربط للرقم: ${formattedPhone}...`);
-                    
-                    // طلب الكود من السيرفر
-                    const code = await this.sock.requestPairingCode(formattedPhone);
-                    
-                    const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
-
-                    await ctx.replyWithHTML(
-                        `💎 <b>كود الربط الخاص بك:</b>\n\n` +
-                        `<code>${formattedCode}</code>\n\n` +
-                        `✅ <b>الخطوات:</b>\n` +
-                        `1. افتح واتساب على هاتفك.\n` +
-                        `2. الإعدادات > الأجهزة المرتبطة.\n` +
-                        `3. ربط جهاز > ربط برقم الهاتف بدلاً من ذلك.\n` +
-                        `4. أدخل الكود أعلاه.`
-                    );
-                } catch (e) {
-                    console.error("Pairing Error:", e);
-                    await ctx.reply(`❌ فشل: ${e.message.includes('401') ? "الرقم غير مسجل في واتساب أو محظور" : e.message}`);
-                }
-            }, 5000); 
+        // --- منطق PairCode المحسن بدقة ---
+        if (telegramCtx && !sock.authState.creds.registered) {
+            await delay(4000); // وقت مستقطع لضمان جاهزية السوكيت
+            try {
+                const code = await sock.requestPairingCode(phone);
+                const prettyCode = code?.match(/.{1,4}/g)?.join('-') || code;
+                
+                await telegramCtx.replyWithHTML(
+                    `💎 <b>كود الربط الخاص بك جاهز</b>\n\n` +
+                    `الرقم: <code>${phone}</code>\n` +
+                    `الكود: <code>${prettyCode}</code>\n\n` +
+                    `📝 <b>طريقة التفعيل:</b>\n` +
+                    `1. افتح واتساب > الأجهزة المرتبطة.\n` +
+                    `2. اختر "ربط جهاز" ثم "الربط برقم الهاتف".\n` +
+                    `3. أدخل الكود في هاتفك فوراً.`
+                );
+            } catch (err) {
+                console.error("Pairing Error:", err);
+                await telegramCtx.reply("❌ حدث خطأ أثناء طلب الكود. يرجى المحاولة لاحقاً.");
+            }
         }
 
-        this.sock.ev.on('connection.update', async (update) => {
+        // --- إدارة الأحداث ---
+        sock.ev.on('creds.update', saveCreds);
+
+        sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
             
             if (connection === 'close') {
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-                
-                if (shouldReconnect) {
-                    this.connectWhatsApp();
+                const reason = lastDisconnect?.error?.output?.statusCode;
+                if (reason !== DisconnectReason.loggedOut) {
+                    console.log(`🔄 إعادة اتصال تلقائي للرقم ${phone}...`);
+                    this.createWhatsAppInstance(phone);
                 } else {
-                    this.notifyAdmin("⚠️ تم تسجيل الخروج. يرجى استخدام /pair للربط مجدداً.");
+                    console.log(`🚫 تم تسجيل الخروج النهائي للرقم ${phone}`);
+                    this.activeConnections.delete(phone);
+                    await fs.remove(sessionDir);
+                    this.notifyAdmin(`⚠️ الجلسة <code>${phone}</code> سجلت خروجها وتم حذف بياناتها.`);
                 }
             } else if (connection === 'open') {
-                this.notifyAdmin("✅ متصل الآن بنجاح!");
+                this.notifyAdmin(`✅ <b>تم ربط الرقم بنجاح!</b>\nالجلسة: <code>${phone}</code> نشطة الآن.`);
             }
         });
 
-        this.sock.ev.on('creds.update', saveCreds);
-        this.sock.ev.on('messages.upsert', (m) => this.handleIncoming(m));
+        sock.ev.on('messages.upsert', async (m) => {
+            if (m.type !== 'notify') return;
+            for (const msg of m.messages) {
+                if (!msg.message || msg.key.remoteJid === 'status@broadcast') continue;
+                this.processIncomingMessage(phone, msg);
+            }
+        });
     }
 
-    async handleIncoming(m) {
-        if (m.type !== 'notify') return;
-        for (const msg of m.messages) {
-            if (!msg.message || msg.key.remoteJid === 'status@broadcast') continue;
-            // منطق معالجة الرسائل كما هو في كودك...
+    /**
+     * معالجة وتحويل الرسائل الواردة إلى تليجرام
+     */
+    async processIncomingMessage(instancePhone, msg) {
+        const jid = msg.key.remoteJid;
+        const name = msg.pushName || "مجهول";
+        const type = getContentType(msg.message);
+        const fromMe = msg.key.fromMe;
+
+        // تجاهل رسائل البوت نفسه لتجنب الحلقات المفرغة
+        if (fromMe) return;
+
+        const caption = `📱 <b>واتساب (${instancePhone})</b>\n👤 <b>من:</b> ${name}\n🆔 <code>${jid.split('@')[0]}</code>\n━━━━━━━\n`;
+        const text = this.getText(msg.message, type);
+
+        try {
+            const keyboard = Markup.inlineKeyboard([
+                [Markup.button.callback("💬 رد سريع", `reply:${instancePhone}:${jid}`)]
+            ]);
+
+            await this.managerBot.telegram.sendMessage(CONFIG.ADMIN_ID, caption + text, { 
+                parse_mode: 'HTML',
+                ...keyboard 
+            });
+        } catch (e) {
+            console.error("Forwarding Error:", e);
         }
     }
 
-    setupHandlers() {
-        this.bot1.start((ctx) => ctx.reply("أرسل /pair متبوعاً برقمك مع مفتاح الدولة.\nمثال: /pair 9665XXXXXXXX"));
-        
-        this.bot1.command('pair', async (ctx) => {
-            const num = ctx.message.text.split(' ')[1];
-            if (!num) return ctx.reply("يرجى إدخال الرقم!");
-            await this.connectWhatsApp(num, ctx);
+    getText(msg, type) {
+        if (type === 'conversation') return msg.conversation;
+        if (type === 'extendedTextMessage') return msg.extendedTextMessage.text;
+        if (msg[type]?.caption) return msg[type].caption;
+        return "📎 [وسائط/ملف]";
+    }
+
+    /**
+     * إعداد أوامر البوتات
+     */
+    setupBotHandlers() {
+        // --- بوت الربط ---
+        this.pairingBot.start((ctx) => {
+            ctx.replyWithHTML("👑 <b>مرحباً بك في نظام الربط VIP</b>\nأرسل /pair متبوعاً بالرقم مع الكود الدولي.\n\nمثال: <code>/pair 966501234567</code>");
         });
 
-        this.bot2.start((ctx) => {
-            if (ctx.from.id.toString() !== VIP_CONFIG.ADMIN_ID) return;
-            ctx.reply("لوحة التحكم جاهزة.");
+        this.pairingBot.command('pair', async (ctx) => {
+            const phone = ctx.message.text.split(' ')[1]?.replace(/[^0-9]/g, '');
+            if (!phone || phone.length < 10) return ctx.reply("❌ يرجى كتابة الرقم بشكل صحيح.");
+            
+            if (this.activeConnections.has(phone)) return ctx.reply("⚠️ هذا الرقم مرتبط بالفعل!");
+            
+            await ctx.reply("⏳ جاري طلب الكود من سيرفرات واتساب...");
+            this.createWhatsAppInstance(phone, ctx);
+        });
+
+        // --- بوت المدير ---
+        this.managerBot.start((ctx) => {
+            if (ctx.from.id.toString() !== CONFIG.ADMIN_ID) return;
+            ctx.reply("🛠 لوحة التحكم نشطة. ستصلك الرسائل هنا.");
+        });
+
+        this.managerBot.command('status', (ctx) => {
+            if (ctx.from.id.toString() !== CONFIG.ADMIN_ID) return;
+            let msg = "📱 <b>الجلسات النشطة:</b>\n\n";
+            this.activeConnections.forEach((_, key) => msg += `✅ ${key}\n`);
+            ctx.replyWithHTML(this.activeConnections.size > 0 ? msg : "لا توجد جلسات نشطة.");
+        });
+
+        // الرد السريع
+        this.managerBot.action(/reply:(.*):(.*)/, async (ctx) => {
+            const [_, phone, targetJid] = ctx.match;
+            ctx.session = { activeReply: { phone, targetJid } };
+            await ctx.answerCbQuery();
+            await ctx.replyWithHTML(`📝 أرسل رسالتك الآن للرد على <code>${targetJid.split('@')[0]}</code> عبر الرقم <code>${phone}</code>\n/cancel لإلغاء الرد.`);
+        });
+
+        this.managerBot.on('text', async (ctx) => {
+            if (ctx.from.id.toString() !== CONFIG.ADMIN_ID) return;
+            if (ctx.message.text === '/cancel') { ctx.session = null; return ctx.reply("❌ تم الإلغاء."); }
+
+            if (ctx.session?.activeReply) {
+                const { phone, targetJid } = ctx.session.activeReply;
+                const sock = this.activeConnections.get(phone);
+                
+                if (sock) {
+                    await sock.sendMessage(targetJid, { text: ctx.message.text });
+                    ctx.reply("✅ تم إرسال الرد.");
+                    ctx.session = null;
+                } else {
+                    ctx.reply("❌ فشل: الجلسة غير متصلة حالياً.");
+                }
+            }
         });
     }
 
     notifyAdmin(text) {
-        this.bot2.telegram.sendMessage(VIP_CONFIG.ADMIN_ID, text, { parse_mode: 'HTML' }).catch(() => {});
-    }
-
-    launchBots() {
-        this.bot1.launch();
-        this.bot2.launch();
+        this.managerBot.telegram.sendMessage(CONFIG.ADMIN_ID, text, { parse_mode: 'HTML' }).catch(() => {});
     }
 }
 
-new VIPEngine();
+// البدء
+new WhatsAppBridge();
