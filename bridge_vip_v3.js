@@ -1,7 +1,7 @@
 /**
  * 👑 WHATSAPP-TELEGRAM BRIDGE [VIP MULTI-SESSION FIXED]
  * --------------------------------------------------------
- * تم دمج منطق KNIGHT TARZAN MD لضمان عمل PairCode بنسبة 100%
+ * تم تعديل هوية المتصفح وتوقيت الطلب لضمان ظهور إشعار الربط فوراً
  */
 
 const { 
@@ -10,7 +10,7 @@ const {
     DisconnectReason, 
     fetchLatestBaileysVersion, 
     makeInMemoryStore,
-    makeCacheableSignalKeyStore, // الإضافة المهمة من كود طرزان
+    makeCacheableSignalKeyStore,
     getContentType,
     Browsers,
     delay
@@ -44,12 +44,14 @@ class VIPEngine {
 
     async init() {
         this.setupHandlers();
-        // تحميل الجلسات السابقة
-        const dirs = fs.readdirSync(VIP_CONFIG.SESSIONS_DIR);
-        for (const dir of dirs) {
-            if (dir.startsWith('user-')) {
-                const phone = dir.replace('user-', '');
-                this.startWhatsApp(phone);
+        // تحميل الجلسات السابقة عند التشغيل
+        if (fs.existsSync(VIP_CONFIG.SESSIONS_DIR)) {
+            const dirs = fs.readdirSync(VIP_CONFIG.SESSIONS_DIR);
+            for (const dir of dirs) {
+                if (dir.startsWith('user-')) {
+                    const phone = dir.replace('user-', '');
+                    this.startWhatsApp(phone);
+                }
             }
         }
         
@@ -67,38 +69,42 @@ class VIPEngine {
             version,
             auth: {
                 creds: state.creds,
-                // استخدام الـ KeyStore المتطور كما في كود طرزان لإصلاح تشفير الكود
                 keys: makeCacheableSignalKeyStore(state.keys, logger)
             },
             logger,
-            browser: Browsers.ubuntu("Chrome"), // متصفح طرزان المعتمد
+            // 🛡️ تعديل هام: استخدام macOS Chrome بدلاً من Ubuntu لضمان ظهور إشعار الربط
+            browser: Browsers.macOS("Chrome"), 
             markOnlineOnConnect: true,
             syncFullHistory: false,
-            printQRInTerminal: false
+            printQRInTerminal: false,
+            connectTimeoutMs: 60000
         });
 
         this.activeSessions.set(phone, sock);
 
-        // --- منطق طلب الكود المصلح (نسخة طرزان بدقة) ---
+        // --- منطق طلب الكود المصلح بدقة ---
         if (ctx && !sock.authState.creds.registered) {
-            // انتظار 3 ثوانٍ كما في كود طرزان تماماً
+            // ⏳ زيادة وقت الانتظار إلى 6 ثوانٍ لضمان استقرار قناة الاتصال في Render
             setTimeout(async () => {
                 try {
                     const cleanPhone = phone.replace(/[^0-9]/g, '');
+                    console.log(`[System] Requesting Pairing Code for: ${cleanPhone}`);
+                    
                     const code = await sock.requestPairingCode(cleanPhone);
                     
                     if (code) {
                         await ctx.replyWithHTML(
                             `🦁 <b>كود الربط الملكي (اضغط للنسخ):</b>\n\n` +
                             `<code>${code}</code>\n\n` +
-                            `📱 <b>واتساب > الأجهزة المرتبطة</b>`
+                            `📱 <b>افتح واتساب > الأجهزة المرتبطة</b>\n` +
+                            `⚠️ سيظهر لك جهاز جديد باسم <b>macOS Chrome</b>`
                         );
                     }
                 } catch (e) {
                     console.error("Pairing Error:", e);
-                    await ctx.reply("❌ فشل طلب الكود، تأكد من الرقم.");
+                    await ctx.reply("❌ فشل طلب الكود. يرجى التأكد من الرقم والمحاولة مرة أخرى.");
                 }
-            }, 3000);
+            }, 6000); 
         }
 
         sock.ev.on('creds.update', saveCreds);
@@ -133,7 +139,7 @@ class VIPEngine {
         if (msg.key.fromMe) return;
 
         const text = type === 'conversation' ? msg.message.conversation : 
-                     type === 'extendedTextMessage' ? msg.message.extendedTextMessage.text : "[وسائط]";
+                     type === 'extendedTextMessage' ? msg.message.extendedTextMessage.text : "[وسائط/ملف]";
 
         const caption = `📥 <b>رسالة جديدة (${phone})</b>\n👤 ${name} | <code>${jid.split('@')[0]}</code>\n━━━━━━━\n${text}`;
         
@@ -141,14 +147,18 @@ class VIPEngine {
     }
 
     setupHandlers() {
-        this.bot1.start((ctx) => ctx.reply("أرسل /pair [الرقم] للبدء."));
+        this.bot1.start((ctx) => ctx.reply("أرسل /pair [الرقم الدولي] للبدء."));
         this.bot1.command('pair', (ctx) => {
             const num = ctx.message.text.split(' ')[1]?.replace(/\D/g, "");
-            if (!num) return ctx.reply("أدخل الرقم!");
+            if (!num || num.length < 10) return ctx.reply("❌ يرجى إدخال الرقم الدولي بشكل صحيح.");
             this.startWhatsApp(num, ctx);
         });
 
-        this.bot2.start((ctx) => ctx.reply("لوحة التحكم جاهزة."));
+        this.bot2.start((ctx) => {
+            if (ctx.from.id.toString() === VIP_CONFIG.ADMIN_ID) {
+                ctx.reply("🛠 لوحة التحكم نشطة.");
+            }
+        });
     }
 
     notifyAdmin(text) {
